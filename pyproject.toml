@@ -1,0 +1,23 @@
+[project]
+name = "mirror.py-kaist-status"
+version = "0.1.0"
+description = "mirror.py status plug-in that emits the legacy KAIST geoul status JSON."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [
+    { name = "SPARCS KAIST" },
+]
+dependencies = [
+    "mirror.py>=1.0.0",
+]
+
+[project.entry-points."mirror.status"]
+kaist-status = "mirror_plugin_kaist_status:plugin"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["mirror_plugin_kaist_status*"]
