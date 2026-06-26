@@ -3,18 +3,27 @@
 This plug-in registers an additional ``StatusOutput`` that mirror.py writes on
 every package status change. The shape matches the legacy
 ``ftp.kaist.ac.kr/geoul`` status document captured in ``example.json``.
+
+Log paths recorded by mirror.py are local POSIX paths under the daemon's
+``packagefileformat.base`` directory. They must never be written verbatim to
+the public status document. When the operator sets ``log_base_url`` in the
+plug-in config, every log ``href`` has its local base prefix swapped for that
+externally exposed (nginx-served) URL base, keeping the per-package
+folder/filename tail intact.
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import Iterable, Optional
 
 import mirror.toolbox
 from mirror.plugin import StatusOutput, status_plugin
 
 NAME = "kaist-status"
-DEFAULT_OUTPUT_PATH = "/var/www/mirror/kaist-status.json"
+DEFAULT_OUTPUT_PATH = "/etc/mirror/kaist.json"
 CONFIG_PATH_KEY = "output_path"
+LOG_BASE_URL_KEY = "log_base_url"
 KST = timezone(timedelta(hours=9))
 
 
@@ -63,6 +72,72 @@ def format_links(links: Iterable) -> list[dict]:
     return [{"rel": link.rel, "href": link.href} for link in links]
 
 
+def resolve_log_base_path() -> Optional[str]:
+    """Read the daemon's local log base directory from mirror.py config.
+
+    The value is taken from ``mirror.conf.logger["packagefileformat"]["base"]``
+    and resolved to an absolute path so it matches the resolved log paths that
+    mirror.py stores in ``StatusInfo``.
+
+    Return:
+        base(str | None): Absolute local log base path, or None when the config
+            is unavailable or unset.
+    """
+    try:
+        import mirror
+
+        base = mirror.conf.logger["packagefileformat"]["base"]
+    except (AttributeError, KeyError, TypeError):
+        return None
+    if not base:
+        return None
+    return str(Path(base).resolve(strict=False))
+
+
+def get_log_base_url() -> Optional[str]:
+    """Read the externally exposed log URL base from the plug-in config.
+
+    Return:
+        base_url(str | None): The operator-configured ``log_base_url`` value, or
+            None when the plug-in has no config block or the key is unset.
+    """
+    try:
+        import mirror.plugin
+
+        cfg = mirror.plugin.get_config(NAME)
+    except (KeyError, AttributeError, TypeError):
+        return None
+    return cfg.get(LOG_BASE_URL_KEY) or None
+
+
+def convert_log_href(
+    href: Optional[str],
+    base_path: Optional[str],
+    base_url: Optional[str],
+) -> Optional[str]:
+    """Rewrite a local POSIX log path into an externally exposed URL.
+
+    The local ``base_path`` prefix is swapped for ``base_url`` while the
+    per-package folder/filename tail is preserved. When ``base_url`` is unset,
+    or the href does not live under ``base_path``, the original value is
+    returned unchanged.
+
+    Args:
+        href(str | None): Local log path recorded by mirror.py.
+        base_path(str | None): Absolute local log base directory to strip.
+        base_url(str | None): External URL base to prepend.
+
+    Return:
+        href(str | None): Rewritten URL, or the original href when no rewrite applies.
+    """
+    if not href or not base_url:
+        return href
+    if base_path and href.startswith(base_path):
+        remainder = href[len(base_path):]
+        return base_url.rstrip("/") + "/" + remainder.lstrip("/")
+    return href
+
+
 def build_sync_block(pkg) -> Optional[dict]:
     """Render the ``sync`` block for a package, or None when no upstream exists.
 
@@ -85,11 +160,17 @@ def build_sync_block(pkg) -> Optional[dict]:
     return block
 
 
-def build_updated_block(statusinfo) -> Optional[dict]:
+def build_updated_block(
+    statusinfo,
+    base_path: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> Optional[dict]:
     """Render the ``status.updated`` entry, or None if the package never synced.
 
     Args:
         statusinfo: ``Package.StatusInfo`` exposing ``lastsuccesstime`` and ``lastsuccesslog``.
+        base_path(str | None): Local log base path to rewrite (see convert_log_href).
+        base_url(str | None): External log URL base to rewrite to.
 
     Return:
         block(dict | None): ``{"href": ..., "timestamp": ...}`` when at least one
@@ -100,12 +181,16 @@ def build_updated_block(statusinfo) -> Optional[dict]:
     if last_time <= 0 and not last_log:
         return None
     return {
-        "href": last_log,
+        "href": convert_log_href(last_log, base_path, base_url),
         "timestamp": format_iso_kst(last_time) if last_time > 0 else None,
     }
 
 
-def build_updating_block(pkg) -> Optional[dict]:
+def build_updating_block(
+    pkg,
+    base_path: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> Optional[dict]:
     """Render the ``status.updating`` entry, or None if no sync is in progress.
 
     The ``updating.timestamp`` is derived from ``pkg.timestamp`` (milliseconds),
@@ -113,6 +198,8 @@ def build_updating_block(pkg) -> Optional[dict]:
 
     Args:
         pkg: ``mirror.structure.Package`` instance.
+        base_path(str | None): Local log base path to rewrite (see convert_log_href).
+        base_url(str | None): External log URL base to rewrite to.
 
     Return:
         block(dict | None): ``{"href": ..., "timestamp": ...}`` when a running log
@@ -125,16 +212,22 @@ def build_updating_block(pkg) -> Optional[dict]:
     timestamp_ms = getattr(pkg, "timestamp", 0.0) or 0.0
     timestamp_seconds = timestamp_ms / 1000.0 if timestamp_ms else 0.0
     return {
-        "href": running,
+        "href": convert_log_href(running, base_path, base_url),
         "timestamp": format_iso_kst(timestamp_seconds) if timestamp_seconds > 0 else None,
     }
 
 
-def build_failed_block(statusinfo) -> Optional[dict]:
+def build_failed_block(
+    statusinfo,
+    base_path: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> Optional[dict]:
     """Render the ``status.failed`` entry, or None if the package has no error history.
 
     Args:
         statusinfo: ``Package.StatusInfo`` instance.
+        base_path(str | None): Local log base path to rewrite (see convert_log_href).
+        base_url(str | None): External log URL base to rewrite to.
 
     Return:
         block(dict | None): ``{"href": ..., "timestamp": ..., "count": str}``
@@ -147,35 +240,47 @@ def build_failed_block(statusinfo) -> Optional[dict]:
     if error_count <= 0 and last_error_time <= 0 and not last_error_log:
         return None
     return {
-        "href": last_error_log,
+        "href": convert_log_href(last_error_log, base_path, base_url),
         "timestamp": format_iso_kst(last_error_time) if last_error_time > 0 else None,
         "count": str(error_count),
     }
 
 
-def build_status_block(pkg) -> dict:
+def build_status_block(
+    pkg,
+    base_path: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> dict:
     """Compose the per-package ``status`` block per KAIST schema.
 
     Args:
         pkg: ``mirror.structure.Package`` instance.
+        base_path(str | None): Local log base path to rewrite (see convert_log_href).
+        base_url(str | None): External log URL base to rewrite to.
 
     Return:
         block(dict): Mapping with ``updated``/``updating``/``failed``/``usage``/``size`` keys.
     """
     return {
-        "updated": build_updated_block(pkg.statusinfo),
-        "updating": build_updating_block(pkg),
-        "failed": build_failed_block(pkg.statusinfo),
+        "updated": build_updated_block(pkg.statusinfo, base_path, base_url),
+        "updating": build_updating_block(pkg, base_path, base_url),
+        "failed": build_failed_block(pkg.statusinfo, base_path, base_url),
         "usage": None,
         "size": None,
     }
 
 
-def shape_package(pkg) -> dict:
+def shape_package(
+    pkg,
+    base_path: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> dict:
     """Convert a mirror.py Package into the KAIST geoul package dict.
 
     Args:
         pkg: ``mirror.structure.Package`` instance.
+        base_path(str | None): Local log base path to rewrite (see convert_log_href).
+        base_url(str | None): External log URL base to rewrite to.
 
     Return:
         payload(dict): The KAIST per-package representation.
@@ -191,12 +296,15 @@ def shape_package(pkg) -> dict:
     if sync_block is not None:
         payload["sync"] = sync_block
 
-    payload["status"] = build_status_block(pkg)
+    payload["status"] = build_status_block(pkg, base_path, base_url)
     return payload
 
 
 def build_kaist_payload(packages: Iterable) -> dict:
     """Build the top-level KAIST status JSON payload.
+
+    Log hrefs are rewritten from local POSIX paths to the externally exposed
+    URL base when the operator has configured ``log_base_url``.
 
     Args:
         packages(Iterable): Iterable of ``mirror.structure.Package`` instances.
@@ -205,9 +313,13 @@ def build_kaist_payload(packages: Iterable) -> dict:
         payload(dict): Top-level KAIST status document with ``timestamp`` and
             ``package`` keys, where ``package`` is keyed by ``pkgid``.
     """
+    base_path = resolve_log_base_path()
+    base_url = get_log_base_url()
     return {
         "timestamp": format_now_iso_kst(),
-        "package": {pkg.pkgid: shape_package(pkg) for pkg in packages},
+        "package": {
+            pkg.pkgid: shape_package(pkg, base_path, base_url) for pkg in packages
+        },
     }
 
 

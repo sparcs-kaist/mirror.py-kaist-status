@@ -4,7 +4,7 @@ This repository builds a `status`-type plug-in for [mirror.py](https://github.co
 
 ## What this plug-in does
 
-mirror.py's built-in web status JSON has a different shape from the historical KAIST `ftp.kaist.ac.kr/geoul/...` schema. To keep existing consumers working, this plug-in writes its own additional file (e.g. `/var/www/mirror/kaist-status.json`) on every package status change, formatted per `example.json`. mirror.py's own `status.json` is **not** modified.
+mirror.py's built-in web status JSON has a different shape from the historical KAIST `ftp.kaist.ac.kr/geoul/...` schema. To keep existing consumers working, this plug-in writes its own additional file (default `/etc/mirror/kaist.json`) on every package status change, formatted per `example.json`. mirror.py's own `status.json` is **not** modified.
 
 This is a textbook use case for the mirror.py plug-in framework's `status` plug-in **outputs** mode (see `reference/PLUGINS.md` Mode 3).
 
@@ -33,11 +33,11 @@ Use this table when implementing the build callable. Source side is the
 | `package.<id>.link` | `pkg.link` (list of `Link`) | each `Link.to_dict()` already gives `{rel, href}` |
 | `package.<id>.sync.source` | `pkg.settings.src` | direct copy |
 | `package.<id>.sync.frequency` | `pkg.syncrate` (int seconds) | convert via `mirror.toolbox.format_iso_duration(...)` → "PT10M" etc. omit the `sync` key entirely if no source (see `geoul`/`misc`/`hangul` packages in example.json) |
-| `package.<id>.status.updated.href` | `pkg.statusinfo.lastsuccesslog` | the gzipped log path |
+| `package.<id>.status.updated.href` | `pkg.statusinfo.lastsuccesslog` | the gzipped log path — rewritten to the public URL (see "Log href rewriting") |
 | `package.<id>.status.updated.timestamp` | `pkg.statusinfo.lastsuccesstime` | float epoch → ISO 8601 |
-| `package.<id>.status.updating.href` | `pkg.statusinfo.runninglog` | only present while syncing |
+| `package.<id>.status.updating.href` | `pkg.statusinfo.runninglog` | only present while syncing — rewritten to the public URL |
 | `package.<id>.status.updating.timestamp` | derived from current sync start | timestamp the running entry |
-| `package.<id>.status.failed.href` | `pkg.statusinfo.lasterrorlog` | |
+| `package.<id>.status.failed.href` | `pkg.statusinfo.lasterrorlog` | rewritten to the public URL |
 | `package.<id>.status.failed.timestamp` | `pkg.statusinfo.lasterrortime` | float epoch → ISO 8601 |
 | `package.<id>.status.failed.count` | `pkg.statusinfo.errorcount` | KAIST schema stores as **string** (`"29"`), not int — convert |
 | `package.<id>.status.usage` | n/a | always `null` (mirror.py doesn't track yet) |
@@ -47,6 +47,66 @@ Edge cases visible in `example.json`:
 - A package with no `sync` block at all (e.g. `geoul`, `misc`, `hangul`) — these have no upstream. mirror.py's `local` synctype maps here; emit no `sync` key.
 - `hidden` is `"true"` (the JSON string) when set, else `null`.
 - `failed.count` is a string.
+
+## Log href rewriting
+
+The `lastsuccesslog`/`runninglog`/`lasterrorlog` values mirror.py records are
+**local POSIX paths** under the daemon's `logger.packagefileformat.base`
+directory. These must never be written verbatim to the public status document —
+the schema's `href` fields are URLs served externally through nginx.
+
+The plug-in rewrites each log `href` by swapping the local base prefix for the
+operator-configured public URL base, preserving the per-package
+folder/filename tail:
+
+```
+base (mirror.conf.logger.packagefileformat.base): /var/log/mirror/packages
+log_base_url (this plug-in's config):              http://ftp.kaist.ac.kr/geoul/sync
+
+/var/log/mirror/packages/2026/05/06/10:42:01.154793368.ArchLinux.log.gz
+  -> http://ftp.kaist.ac.kr/geoul/sync/2026/05/06/10:42:01.154793368.ArchLinux.log.gz
+```
+
+- The local base is read automatically from `mirror.conf.logger["packagefileformat"]["base"]`; the operator only configures the public URL base.
+- When `log_base_url` is unset (or an href is not under the base), the original value passes through unchanged.
+
+## Plug-in configuration
+
+Recent mirror.py (commits on `feat/plugin-config-files`, post-1.2.2) moved
+per-plug-in settings **out of `config.json`** into a separate file. The
+`config` sub-key under `settings.plugins.<name>` is no longer supported.
+
+1. **Enable the plug-in** in `config.json` — enable-only shape, no `config` key:
+
+   ```json
+   "settings": {
+     "plugins": {
+       "kaist-status": { "enabled": true }
+     }
+   }
+   ```
+
+2. **Put settings in a sibling file** next to `config.json`, named
+   `kaist-status.json` (the default `<plugin-name>.json`; override via
+   `config_filename=` on the plug-in record if needed). `get_config()` reads it
+   lazily on every status update — no daemon restart needed for value changes:
+
+   ```json
+   {
+     "output_path": "/etc/mirror/kaist.json",
+     "log_base_url": "http://ftp.kaist.ac.kr/geoul/sync"
+   }
+   ```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `output_path` | `/etc/mirror/kaist.json` | Where the KAIST status JSON is written (overrides `StatusOutput.default_path` via `config_path_key`). |
+| `log_base_url` | unset | Public URL base that replaces the local `packagefileformat.base` prefix in every log `href`. |
+
+The plug-in reads both values through `mirror.plugin.get_config("kaist-status")`,
+so the same code works across mirror.py versions — only the *location* of the
+config differs (inline `config` block on 1.0.0–1.2.2, sibling file on newer
+builds). No plug-in code change is required for the file-based config.
 
 ## Plug-in skeleton (sketch — adapt)
 
@@ -81,7 +141,7 @@ def plugin():
         name=NAME,
         outputs=[StatusOutput(
             name="kaist-status",
-            default_path="/var/www/mirror/kaist-status.json",
+            default_path="/etc/mirror/kaist.json",
             build=build_kaist_payload,
             config_path_key="output_path",
         )],

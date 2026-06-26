@@ -19,6 +19,7 @@ from mirror_plugin_kaist_status import (
     build_sync_block,
     build_updated_block,
     build_updating_block,
+    convert_log_href,
     format_hidden_flag,
     format_iso_kst,
     format_links,
@@ -339,3 +340,116 @@ def test_build_kaist_payload_top_level_shape():
     assert set(payload["package"].keys()) == {"x"}
     parsed = datetime.fromisoformat(payload["timestamp"])
     assert parsed.utcoffset() == timedelta(hours=9)
+
+
+LOG_BASE_PATH = "/var/log/mirror/packages"
+LOG_BASE_URL = "http://ftp.kaist.ac.kr/geoul/sync"
+
+
+def test_convert_log_href_rewrites_base_prefix():
+    href = "/var/log/mirror/packages/2026/05/06/10:42:01.154793368.ArchLinux.log.gz"
+    assert convert_log_href(href, LOG_BASE_PATH, LOG_BASE_URL) == (
+        "http://ftp.kaist.ac.kr/geoul/sync/2026/05/06/10:42:01.154793368.ArchLinux.log.gz"
+    )
+
+
+def test_convert_log_href_normalizes_slashes():
+    href = "/var/log/mirror/packages/x.log.gz"
+    assert convert_log_href(href, "/var/log/mirror/packages/", LOG_BASE_URL + "/") == (
+        "http://ftp.kaist.ac.kr/geoul/sync/x.log.gz"
+    )
+
+
+def test_convert_log_href_passthrough_when_no_base_url():
+    href = "/var/log/mirror/packages/x.log.gz"
+    assert convert_log_href(href, LOG_BASE_PATH, None) == href
+
+
+def test_convert_log_href_passthrough_when_outside_base():
+    href = "/srv/other/x.log.gz"
+    assert convert_log_href(href, LOG_BASE_PATH, LOG_BASE_URL) == href
+
+
+def test_convert_log_href_none_and_empty():
+    assert convert_log_href(None, LOG_BASE_PATH, LOG_BASE_URL) is None
+    assert convert_log_href("", LOG_BASE_PATH, LOG_BASE_URL) == ""
+
+
+def test_build_updated_block_rewrites_href():
+    iso = "2026-05-06T10:42:07+09:00"
+    info = make_status_info(
+        lastsuccesslog="/var/log/mirror/packages/2026/05/06/x.log.gz",
+        lastsuccesstime=parse_iso_to_epoch(iso),
+    )
+    assert build_updated_block(info, LOG_BASE_PATH, LOG_BASE_URL) == {
+        "href": "http://ftp.kaist.ac.kr/geoul/sync/2026/05/06/x.log.gz",
+        "timestamp": iso,
+    }
+
+
+def test_build_failed_block_rewrites_href():
+    iso = "2026-05-02T06:55:34+09:00"
+    info = make_status_info(
+        lasterrorlog="/var/log/mirror/packages/2026/05/02/e.log.gz",
+        lasterrortime=parse_iso_to_epoch(iso),
+        errorcount=29,
+    )
+    assert build_failed_block(info, LOG_BASE_PATH, LOG_BASE_URL) == {
+        "href": "http://ftp.kaist.ac.kr/geoul/sync/2026/05/02/e.log.gz",
+        "timestamp": iso,
+        "count": "29",
+    }
+
+
+def test_build_updating_block_rewrites_href():
+    iso = "2026-05-06T08:12:01+09:00"
+    pkg = make_package(
+        pkgid="CRAN",
+        name="CRAN",
+        synctype="rsync",
+        statusinfo=make_status_info(
+            runninglog="/var/log/mirror/packages/2026/05/06/r.log"
+        ),
+        timestamp=parse_iso_to_epoch(iso) * 1000.0,
+    )
+    assert build_updating_block(pkg, LOG_BASE_PATH, LOG_BASE_URL) == {
+        "href": "http://ftp.kaist.ac.kr/geoul/sync/2026/05/06/r.log",
+        "timestamp": iso,
+    }
+
+
+def test_shape_package_rewrites_log_hrefs():
+    iso = "2026-05-06T10:42:07+09:00"
+    pkg = make_package(
+        pkgid="ArchLinux",
+        name="ArchLinux",
+        synctype="rsync",
+        syncrate=600,
+        src="rsync://ftp.gwdg.de/pub/linux/archlinux/",
+        statusinfo=make_status_info(
+            lastsuccesslog="/var/log/mirror/packages/2026/05/06/a.log.gz",
+            lastsuccesstime=parse_iso_to_epoch(iso),
+        ),
+    )
+    shaped = shape_package(pkg, LOG_BASE_PATH, LOG_BASE_URL)
+    assert shaped["status"]["updated"]["href"] == (
+        "http://ftp.kaist.ac.kr/geoul/sync/2026/05/06/a.log.gz"
+    )
+
+
+def test_shape_package_without_base_url_keeps_posix():
+    iso = "2026-05-06T10:42:07+09:00"
+    posix = "/var/log/mirror/packages/2026/05/06/a.log.gz"
+    pkg = make_package(
+        pkgid="ArchLinux",
+        name="ArchLinux",
+        synctype="rsync",
+        syncrate=600,
+        src="rsync://ftp.gwdg.de/pub/linux/archlinux/",
+        statusinfo=make_status_info(
+            lastsuccesslog=posix,
+            lastsuccesstime=parse_iso_to_epoch(iso),
+        ),
+    )
+    shaped = shape_package(pkg)
+    assert shaped["status"]["updated"]["href"] == posix
