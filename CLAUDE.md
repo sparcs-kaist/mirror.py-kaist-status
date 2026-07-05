@@ -10,9 +10,17 @@ This is a textbook use case for the mirror.py plug-in framework's `status` plug-
 
 ## Required mirror.py version
 
-`mirror.py >= 1.0.0` — the `outputs=[StatusOutput(...)]` mode in the `status` plug-in API (introduced at rc11) is part of the stable 1.0.0 line. Earlier prereleases (rc10 and below) only supported additive `extend_*_fields`, which cannot express a different document shape.
+`mirror.py >= 1.3.0`. The core `outputs=[StatusOutput(...)]` mode dates back to
+1.0.0 (introduced at rc11), but the plug-in now also declares `api_version=(1,0)`
+and implements the `create_config` callback — both are **1.3.0-only** APIs
+(passing them to the factories on older cores raises `TypeError`, and
+`ConfigCreateResult` does not exist there). Hence the dependency floor is `>=1.3.0`.
 
-Verified compatible with mirror.py `1.2.2` (latest as of 2026-06-21): the `status_plugin`/`StatusOutput` signatures, the `build(packages)` call contract, and all `Package`/`StatusInfo` fields used by the mapping table below are unchanged. Test suite passes (`pytest`, 20 passed).
+Verified compatible with mirror.py `1.3.0`: the `status_plugin`/`StatusOutput`
+signatures, the `build(packages)` call contract, all `Package`/`StatusInfo`
+fields used by the mapping table below, the `api_version` gate
+(`PLUGIN_API_VERSION == (1, 0)`), and the `create_config` contract are as
+expected. Test suite passes (`pytest`, 36 passed).
 
 ## Distribution name
 
@@ -108,10 +116,30 @@ Note the two distinct files: `/etc/mirror/kaist.json` is the plug-in's **config
 input** (variables defined here), while `output_path` points at the **generated
 output** the plug-in writes (the geoul status document nginx serves).
 
-The plug-in reads both values through `mirror.plugin.get_config("kaist-status")`,
-so the same code works across mirror.py versions — only the *location* of the
-config differs (inline `config` block on 1.0.0–1.2.2, sibling file on newer
-builds). No plug-in code change is required for the file-based config.
+The plug-in reads both values through `mirror.plugin.get_config("kaist-status")`.
+
+### Scaffolding the config file
+
+Rather than hand-writing `kaist.json`, operators can generate a placeholder via
+the 1.3.0 CLI:
+
+```
+mirror plugin config create kaist-status [--config /etc/mirror/config.json] [--force]
+```
+
+This calls the plug-in's `create_config` callback, which writes
+`<config dir>/kaist.json` (the `config.json` directory, falling back to
+`/etc/mirror` when the CLI does not expose `CONFIG_PATH`). The generated file
+carries placeholder values — `output_path` defaults to
+`/var/www/mirror/kaist-status.json` and `log_base_url` is empty, so log hrefs
+pass through as local paths until the operator fills it in. An existing file is
+left untouched unless `--force` is given.
+
+### API version
+
+The plug-in declares `api_version=(1, 0)` (== `PLUGIN_API_VERSION` on 1.3.0), so
+`load_external_plugins` accepts it without the "does not declare api_version"
+deprecation warning.
 
 ## Plug-in skeleton (sketch — adapt)
 
@@ -160,7 +188,7 @@ def plugin():
 [project]
 name = "mirror.py-kaist-status"
 version = "0.1.0"
-dependencies = ["mirror.py>=1.0.0"]
+dependencies = ["mirror.py>=1.3.0"]
 
 [project.entry-points."mirror.status"]
 kaist-status = "mirror_plugin_kaist_status:plugin"

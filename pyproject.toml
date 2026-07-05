@@ -9,7 +9,7 @@ authors = [
     { name = "SPARCS KAIST" },
 ]
 dependencies = [
-    "mirror.py>=1.0.0",
+    "mirror.py>=1.3.0",
 ]
 
 [project.entry-points."mirror.status"]

@@ -13,18 +13,25 @@ folder/filename tail intact.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Iterable, Optional
 
 import mirror.toolbox
-from mirror.plugin import StatusOutput, status_plugin
+from mirror.plugin import ConfigCreateResult, StatusOutput, status_plugin
 
 NAME = "kaist-status"
 DEFAULT_OUTPUT_PATH = "/var/www/mirror/kaist-status.json"
 CONFIG_FILENAME = "kaist.json"
+CONFIG_DIR_FALLBACK = "/etc/mirror"
 CONFIG_PATH_KEY = "output_path"
 LOG_BASE_URL_KEY = "log_base_url"
+API_VERSION = (1, 0)
+DEFAULT_CONFIG_TEMPLATE = {
+    "output_path": DEFAULT_OUTPUT_PATH,
+    "log_base_url": "",
+}
 KST = timezone(timedelta(hours=9))
 
 
@@ -324,13 +331,57 @@ def build_kaist_payload(packages: Iterable) -> dict:
     }
 
 
+def resolve_config_write_path() -> Path:
+    """Resolve where ``create_kaist_config`` should write the config file.
+
+    The plug-in config lives next to the daemon's ``config.json``. During
+    ``mirror plugin config create`` the framework does not set
+    ``mirror.config.CONFIG_PATH``, so fall back to ``/etc/mirror`` when it is
+    unavailable.
+
+    Return:
+        path(pathlib.Path): Target path ``<config dir>/kaist.json``.
+    """
+    import mirror.config
+
+    config_path = getattr(mirror.config, "CONFIG_PATH", None)
+    base_dir = Path(config_path).parent if config_path else Path(CONFIG_DIR_FALLBACK)
+    return base_dir / CONFIG_FILENAME
+
+
+def create_kaist_config(force: bool) -> ConfigCreateResult:
+    """Scaffold the plug-in config file for ``mirror plugin config create``.
+
+    Writes a placeholder ``kaist.json`` the operator fills in. Honors the
+    framework's create/skip contract: an existing file is left untouched unless
+    ``force`` is set.
+
+    Args:
+        force(bool): Overwrite an existing config file when True.
+
+    Return:
+        result(ConfigCreateResult): ``path`` of the config file and ``created``
+            flag (True when written, False when an existing file was skipped).
+    """
+    target = resolve_config_write_path()
+    if target.exists() and not force:
+        return ConfigCreateResult(path=str(target), created=False)
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(DEFAULT_CONFIG_TEMPLATE, indent=2) + "\n", encoding="utf-8"
+    )
+    return ConfigCreateResult(path=str(target), created=True)
+
+
 def plugin():
     """Entry-point factory consumed by mirror.plugin.load_external_plugins.
 
     The per-plug-in config (``output_path``, ``log_base_url``) is read from
     ``kaist.json`` sitting next to the daemon's ``config.json`` (i.e.
     ``/etc/mirror/kaist.json`` for a ``/etc/mirror/config.json`` deployment),
-    via the ``config_filename`` override.
+    via the ``config_filename`` override. ``mirror plugin config create
+    kaist-status`` scaffolds that file through ``create_kaist_config``.
 
     Return:
         record(mirror.plugin.PluginRecord): Status plug-in record declaring a
@@ -348,4 +399,6 @@ def plugin():
             ),
         ],
         config_filename=CONFIG_FILENAME,
+        create_config=create_kaist_config,
+        api_version=API_VERSION,
     )

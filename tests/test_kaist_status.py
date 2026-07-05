@@ -20,10 +20,12 @@ from mirror_plugin_kaist_status import (
     build_updated_block,
     build_updating_block,
     convert_log_href,
+    create_kaist_config,
     format_hidden_flag,
     format_iso_kst,
     format_links,
     plugin,
+    resolve_config_write_path,
     shape_package,
 )
 
@@ -460,7 +462,62 @@ def test_plugin_record_declares_output_and_config_filename():
     record = plugin()
     assert record.type == "status"
     assert record.config_filename == "kaist.json"
+    assert record.api_version == (1, 0)
+    assert record.create_config is create_kaist_config
     output = record.outputs[0]
     assert output.name == "kaist-status"
     assert output.default_path == "/var/www/mirror/kaist-status.json"
     assert output.config_path_key == "output_path"
+
+
+def test_resolve_config_write_path_uses_config_dir(monkeypatch):
+    import mirror.config
+
+    monkeypatch.setattr(mirror.config, "CONFIG_PATH", "/srv/mirror/config.json", raising=False)
+    assert resolve_config_write_path() == Path("/srv/mirror/kaist.json")
+
+
+def test_resolve_config_write_path_falls_back_to_etc_mirror(monkeypatch):
+    import mirror.config
+
+    monkeypatch.setattr(mirror.config, "CONFIG_PATH", None, raising=False)
+    assert resolve_config_write_path() == Path("/etc/mirror/kaist.json")
+
+
+def test_create_kaist_config_writes_template(tmp_path, monkeypatch):
+    import mirror.config
+
+    monkeypatch.setattr(mirror.config, "CONFIG_PATH", str(tmp_path / "config.json"), raising=False)
+    result = create_kaist_config(force=False)
+
+    target = tmp_path / "kaist.json"
+    assert result.created is True
+    assert result.path == str(target)
+    assert json.loads(target.read_text()) == {
+        "output_path": "/var/www/mirror/kaist-status.json",
+        "log_base_url": "",
+    }
+
+
+def test_create_kaist_config_skips_existing_without_force(tmp_path, monkeypatch):
+    import mirror.config
+
+    monkeypatch.setattr(mirror.config, "CONFIG_PATH", str(tmp_path / "config.json"), raising=False)
+    target = tmp_path / "kaist.json"
+    target.write_text("existing")
+
+    result = create_kaist_config(force=False)
+    assert result.created is False
+    assert target.read_text() == "existing"
+
+
+def test_create_kaist_config_overwrites_with_force(tmp_path, monkeypatch):
+    import mirror.config
+
+    monkeypatch.setattr(mirror.config, "CONFIG_PATH", str(tmp_path / "config.json"), raising=False)
+    target = tmp_path / "kaist.json"
+    target.write_text("existing")
+
+    result = create_kaist_config(force=True)
+    assert result.created is True
+    assert json.loads(target.read_text())["output_path"] == "/var/www/mirror/kaist-status.json"
