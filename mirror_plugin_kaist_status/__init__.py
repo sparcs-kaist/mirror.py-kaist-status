@@ -21,7 +21,8 @@ import mirror.toolbox
 from mirror.plugin import StatusOutput, status_plugin
 
 NAME = "kaist-status"
-DEFAULT_OUTPUT_PATH = "/etc/mirror/kaist.json"
+DEFAULT_OUTPUT_PATH = "/var/www/mirror/kaist-status.json"
+CONFIG_FILENAME = "kaist.json"
 CONFIG_PATH_KEY = "output_path"
 LOG_BASE_URL_KEY = "log_base_url"
 KST = timezone(timedelta(hours=9))
@@ -326,6 +327,11 @@ def build_kaist_payload(packages: Iterable) -> dict:
 def plugin():
     """Entry-point factory consumed by mirror.plugin.load_external_plugins.
 
+    The per-plug-in config (``output_path``, ``log_base_url``) is read from
+    ``kaist.json`` sitting next to the daemon's ``config.json`` (i.e.
+    ``/etc/mirror/kaist.json`` for a ``/etc/mirror/config.json`` deployment),
+    via the ``config_filename`` override.
+
     Return:
         record(mirror.plugin.PluginRecord): Status plug-in record declaring a
             single ``StatusOutput`` whose target path can be overridden through
@@ -341,4 +347,5 @@ def plugin():
                 config_path_key=CONFIG_PATH_KEY,
             ),
         ],
+        config_filename=CONFIG_FILENAME,
     )

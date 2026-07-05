@@ -4,7 +4,7 @@ This repository builds a `status`-type plug-in for [mirror.py](https://github.co
 
 ## What this plug-in does
 
-mirror.py's built-in web status JSON has a different shape from the historical KAIST `ftp.kaist.ac.kr/geoul/...` schema. To keep existing consumers working, this plug-in writes its own additional file (default `/etc/mirror/kaist.json`) on every package status change, formatted per `example.json`. mirror.py's own `status.json` is **not** modified.
+mirror.py's built-in web status JSON has a different shape from the historical KAIST `ftp.kaist.ac.kr/geoul/...` schema. To keep existing consumers working, this plug-in writes its own additional file (default `/var/www/mirror/kaist-status.json`) on every package status change, formatted per `example.json`. mirror.py's own `status.json` is **not** modified.
 
 This is a textbook use case for the mirror.py plug-in framework's `status` plug-in **outputs** mode (see `reference/PLUGINS.md` Mode 3).
 
@@ -87,21 +87,26 @@ per-plug-in settings **out of `config.json`** into a separate file. The
    ```
 
 2. **Put settings in a sibling file** next to `config.json`, named
-   `kaist-status.json` (the default `<plugin-name>.json`; override via
-   `config_filename=` on the plug-in record if needed). `get_config()` reads it
-   lazily on every status update — no daemon restart needed for value changes:
+   `kaist.json` (the plug-in sets `config_filename="kaist.json"`, so for a
+   `/etc/mirror/config.json` deployment the config file is
+   `/etc/mirror/kaist.json`). `get_config()` reads it lazily on every status
+   update — no daemon restart needed for value changes:
 
    ```json
    {
-     "output_path": "/etc/mirror/kaist.json",
+     "output_path": "/var/www/mirror/kaist-status.json",
      "log_base_url": "http://ftp.kaist.ac.kr/geoul/sync"
    }
    ```
 
 | Key | Default | Meaning |
 |---|---|---|
-| `output_path` | `/etc/mirror/kaist.json` | Where the KAIST status JSON is written (overrides `StatusOutput.default_path` via `config_path_key`). |
+| `output_path` | `/var/www/mirror/kaist-status.json` | Where the generated KAIST status JSON is written (overrides `StatusOutput.default_path` via `config_path_key`). |
 | `log_base_url` | unset | Public URL base that replaces the local `packagefileformat.base` prefix in every log `href`. |
+
+Note the two distinct files: `/etc/mirror/kaist.json` is the plug-in's **config
+input** (variables defined here), while `output_path` points at the **generated
+output** the plug-in writes (the geoul status document nginx serves).
 
 The plug-in reads both values through `mirror.plugin.get_config("kaist-status")`,
 so the same code works across mirror.py versions — only the *location* of the
@@ -141,10 +146,11 @@ def plugin():
         name=NAME,
         outputs=[StatusOutput(
             name="kaist-status",
-            default_path="/etc/mirror/kaist.json",
+            default_path="/var/www/mirror/kaist-status.json",
             build=build_kaist_payload,
             config_path_key="output_path",
         )],
+        config_filename="kaist.json",
     )
 ```
 

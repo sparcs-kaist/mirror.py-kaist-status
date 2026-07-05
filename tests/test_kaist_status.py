@@ -23,6 +23,7 @@ from mirror_plugin_kaist_status import (
     format_hidden_flag,
     format_iso_kst,
     format_links,
+    plugin,
     shape_package,
 )
 
@@ -453,3 +454,13 @@ def test_shape_package_without_base_url_keeps_posix():
     )
     shaped = shape_package(pkg)
     assert shaped["status"]["updated"]["href"] == posix
+
+
+def test_plugin_record_declares_output_and_config_filename():
+    record = plugin()
+    assert record.type == "status"
+    assert record.config_filename == "kaist.json"
+    output = record.outputs[0]
+    assert output.name == "kaist-status"
+    assert output.default_path == "/var/www/mirror/kaist-status.json"
+    assert output.config_path_key == "output_path"
