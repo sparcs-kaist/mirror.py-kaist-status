@@ -1,6 +1,6 @@
 [project]
 name = "mirror.py-kaist-status"
-version = "1.0.0"
+version = "1.1.0"
 description = "mirror.py status plug-in that emits the legacy KAIST geoul status JSON."
 readme = "README.md"
 requires-python = ">=3.10"
